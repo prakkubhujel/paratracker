@@ -10,6 +10,7 @@ import LiveStatusBoard from './LiveStatusBoard';
 import PilotsPanel from './PilotsPanel';
 import SystemPanel from './SystemPanel';
 import AdminBroadcast from './AdminBroadcast';
+import Logbook from './Logbook';
 import DiagnosticsPanel from './DiagnosticsPanel';
 import { MilestoneBanner } from './Milestones';
 import { useAudioAlertManager } from './useAudioAlertManager';
@@ -18,6 +19,7 @@ const TABS = [
   { id: 'map', label: 'Live map', component: GeofenceMap },
   { id: 'status', label: 'Status board', component: LiveStatusBoard },
   { id: 'analytics', label: 'Analytics', component: AnalyticsDashboard },
+  { id: 'logbook', label: 'Logbook', component: Logbook },
   { id: 'weather', label: 'Weather', component: WeatherPanel },
   { id: 'rescue', label: 'Rescue registry', component: RescueRegistry },
   { id: 'pilots', label: 'Pilots', component: PilotsPanel },
