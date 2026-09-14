@@ -1,3 +1,28 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Tailwind's base reset (@tailwind base above) resets styling on
+   essentially every HTML element project-wide, which silently strips
+   Leaflet's own default styling for markers/tooltips/popups — this is
+   a well-known conflict between Tailwind and Leaflet, and was very
+   likely why pilot name labels on the map appeared as an unstyled
+   black dot instead of a visible name tag. These rules restore
+   Leaflet's own intended appearance for just its own elements. */
+.leaflet-tooltip {
+  background-color: white !important;
+  border: 1px solid #ccc !important;
+  border-radius: 4px !important;
+  padding: 4px 8px !important;
+  color: #1f2937 !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  white-space: nowrap;
+}
+.leaflet-popup-content-wrapper {
+  border-radius: 8px !important;
+}
+.leaflet-container {
+  font-family: inherit;
+}
