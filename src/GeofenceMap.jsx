@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { MapContainer, TileLayer, CircleMarker, Popup, FeatureGroup } from 'react-leaflet';
+import { MapContainer, TileLayer, CircleMarker, Popup, Tooltip, FeatureGroup, Polyline } from 'react-leaflet';
 import { EditControl } from 'react-leaflet-draw';
 import L from 'leaflet';
 import { supabase } from './supabaseClient';
@@ -14,6 +14,7 @@ const DEFAULT_ZOOM = 13;
 export default function GeofenceMap() {
   const [geofences, setGeofences] = useState([]);
   const [pilots, setPilots] = useState({}); // pilot_id -> { lat, lng, name, status }
+  const [trails, setTrails] = useState({}); // pilot_id -> [[lat,lng], ...]
   const [alerts, setAlerts] = useState([]);
   const [audioUnlocked, setAudioUnlocked] = useState(false);
   const channelRef = useRef(null);
@@ -32,6 +33,22 @@ export default function GeofenceMap() {
         asMap[p.pilot_id] = { lat: p.lat, lng: p.lng, status: p.status, name: p.name };
       }
       setPilots(asMap);
+
+      // Breadcrumb trail — last 15 minutes, airborne pilots only (a
+      // grounded pilot's trail isn't operationally useful and would
+      // just clutter the map).
+      const trailEntries = await Promise.all(
+        data
+          .filter((p) => p.status === 'airborne')
+          .map(async (p) => {
+            const { data: trail } = await supabase.rpc('get_recent_trail', {
+              p_pilot_id: p.pilot_id,
+              p_minutes: 15,
+            });
+            return [p.pilot_id, (trail || []).map((t) => [t.lat, t.lng])];
+          })
+      );
+      setTrails(Object.fromEntries(trailEntries));
     }
   };
 
@@ -168,14 +185,14 @@ export default function GeofenceMap() {
           <p className="text-lg font-semibold text-gray-900 leading-none">{geofences.length}</p>
           <p className="text-xs text-gray-500 mt-0.5">Geofences</p>
         </div>
-        {!audioUnlocked && (
-          <button
-            onClick={unlockAudio}
-            className="bg-brand-600 text-white text-xs font-medium rounded-xl px-3 py-2 shadow-sm"
-          >
-            🔊 Enable alert sounds
-          </button>
-        )}
+        <button
+          onClick={unlockAudio}
+          className={`text-xs font-medium rounded-xl px-3 py-2 shadow-sm ${
+            audioUnlocked ? 'bg-white/95 text-brand-700 border border-gray-200' : 'bg-brand-600 text-white'
+          }`}
+        >
+          {audioUnlocked ? '🔊 Sound enabled — test' : '🔊 Enable alert sounds'}
+        </button>
       </div>
 
       {alerts.length > 0 && (
@@ -204,8 +221,20 @@ export default function GeofenceMap() {
 
       <MapContainer center={DEFAULT_CENTER} zoom={DEFAULT_ZOOM} className="w-full h-full">
         <TileLayer
-          attribution="&copy; OpenStreetMap contributors"
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          // CARTO Voyager — free, no API key required, closer visually
+          // to Google Maps' clean style than default OpenStreetMap tiles
+          // (subtler colors, clearer labels). Real Google Maps tiles are
+          // a separate, bigger decision: they require a Google Cloud
+          // API key with billing enabled (there's a monthly free credit,
+          // but it's not free the way this is), and Google's terms
+          // don't allow pulling their tiles into a generic map library
+          // like Leaflet — you'd need Google's own Maps JavaScript API
+          // (@react-google-maps/api or similar), which is a different
+          // integration, not a one-line tile URL swap. Worth doing if
+          // the exact Google look/behavior matters enough to justify
+          // that setup and ongoing cost; this is the free equivalent.
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+          url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
         />
 
         <FeatureGroup ref={featureGroupRef}>
@@ -218,6 +247,16 @@ export default function GeofenceMap() {
           />
         </FeatureGroup>
 
+        {Object.entries(trails).map(([id, points]) =>
+          points.length > 1 ? (
+            <Polyline
+              key={`trail-${id}`}
+              positions={points}
+              pathOptions={{ color: '#16a34a', weight: 3, opacity: 0.5, dashArray: '4 6' }}
+            />
+          ) : null
+        )}
+
         {Object.entries(pilots).map(([id, p]) => (
           <CircleMarker
             key={id}
@@ -228,6 +267,9 @@ export default function GeofenceMap() {
               fillOpacity: 0.9,
             }}
           >
+            <Tooltip permanent direction="top" offset={[0, -8]} className="pilot-label">
+              {p.name}
+            </Tooltip>
             <Popup>
               <strong>{p.name}</strong>
               <br />

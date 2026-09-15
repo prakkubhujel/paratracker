@@ -1,5 +1,6 @@
 import InfraHealthPanel from './InfraHealthPanel';
 import BackupStatusPanel from './BackupStatusPanel';
+import WeightLimitSettings from './WeightLimitSettings';
 
 export default function SystemPanel() {
   return (
@@ -7,6 +8,7 @@ export default function SystemPanel() {
       <h2 className="text-lg font-semibold">System</h2>
       <InfraHealthPanel />
       <BackupStatusPanel />
+      <WeightLimitSettings />
     </div>
   );
 }

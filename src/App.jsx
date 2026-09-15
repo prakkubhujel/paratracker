@@ -11,6 +11,7 @@ import PilotsPanel from './PilotsPanel';
 import SystemPanel from './SystemPanel';
 import AdminBroadcast from './AdminBroadcast';
 import Logbook from './Logbook';
+import AuditLog from './AuditLog';
 import DiagnosticsPanel from './DiagnosticsPanel';
 import { MilestoneBanner } from './Milestones';
 import { useAudioAlertManager } from './useAudioAlertManager';
@@ -25,6 +26,7 @@ const TABS = [
   { id: 'pilots', label: 'Pilots', component: PilotsPanel },
   { id: 'broadcast', label: 'Broadcast', component: AdminBroadcast },
   { id: 'approvals', label: 'Approvals', component: ApprovalQueue },
+  { id: 'audit', label: 'Audit log', component: AuditLog },
   { id: 'system', label: 'System', component: SystemPanel },
 ];
 
