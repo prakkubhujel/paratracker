@@ -30,7 +30,10 @@ export default function GeofenceMap() {
     if (data) {
       const asMap = {};
       for (const p of data) {
-        asMap[p.pilot_id] = { lat: p.lat, lng: p.lng, status: p.status, name: p.name };
+        asMap[p.pilot_id] = {
+          lat: p.lat, lng: p.lng, status: p.status, name: p.name,
+          altitude: p.altitude_m, speed: p.speed_kmh,
+        };
       }
       setPilots(asMap);
 
@@ -274,6 +277,14 @@ export default function GeofenceMap() {
               <strong>{p.name}</strong>
               <br />
               {p.status}
+              {(p.altitude != null || p.speed != null) && (
+                <>
+                  <br />
+                  {p.altitude != null ? `${Math.round(p.altitude)}m alt` : ''}
+                  {p.altitude != null && p.speed != null ? ' · ' : ''}
+                  {p.speed != null ? `${p.speed} km/h` : ''}
+                </>
+              )}
             </Popup>
           </CircleMarker>
         ))}
