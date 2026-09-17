@@ -1,256 +1,310 @@
-import { useEffect, useRef, useState } from 'react';
-import { MapContainer, TileLayer, CircleMarker, Popup, Tooltip, FeatureGroup } from 'react-leaflet';
-import { EditControl } from 'react-leaflet-draw';
-import L from 'leaflet';
+import { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
-import 'leaflet/dist/leaflet.css';
-import 'leaflet-draw/dist/leaflet.draw.css';
+import { BadgeAwardPanel } from './Milestones';
+import AnalyticsDashboard from './AnalyticsDashboard';
 
-// Default geofence center per project spec §4:
-// Sarangkot and Toripani, Pokhara, Nepal
-const DEFAULT_CENTER = [28.2485, 83.945];
-const DEFAULT_ZOOM = 13;
+export default function PilotsPanel() {
+  const [pilots, setPilots] = useState([]);
+  const [expandedId, setExpandedId] = useState(null);
+  const [busyId, setBusyId] = useState(null);
 
-export default function GeofenceMap() {
-  const [geofences, setGeofences] = useState([]);
-  const [pilots, setPilots] = useState({}); // pilot_id -> { lat, lng, name, status }
-  const [alerts, setAlerts] = useState([]);
-  const [audioUnlocked, setAudioUnlocked] = useState(false);
-  const channelRef = useRef(null);
-  const featureGroupRef = useRef(null);
-
-  const loadGeofences = async () => {
-    const { data } = await supabase.rpc('get_geofences_geojson');
-    if (data) setGeofences(data);
-  };
-
-  const loadPositions = async () => {
-    const { data } = await supabase.rpc('get_live_positions');
-    if (data) {
-      const asMap = {};
-      for (const p of data) {
-        asMap[p.pilot_id] = { lat: p.lat, lng: p.lng, status: p.status, name: p.name };
-      }
-      setPilots(asMap);
-    }
+  const loadPilots = () => {
+    supabase
+      .from('profiles')
+      .select('id, name, status, role')
+      .in('status', ['approved', 'suspended'])
+      .order('name')
+      .then(({ data }) => setPilots(data || []));
   };
 
   useEffect(() => {
-    loadGeofences();
-    loadPositions();
+    loadPilots();
   }, []);
 
-  // Editing/deleting geofences was never actually wired up before —
-  // only creation was. Leaflet's edit/delete toolbar only recognizes
-  // shapes that live inside the FeatureGroup layer group IT manages,
-  // not arbitrary shapes rendered elsewhere on the map — so loaded
-  // geofences have to be added into that same group as raw Leaflet
-  // layers (imperatively, via the Leaflet API directly) rather than
-  // as separate <Polygon> React components, or the edit toolbar has
-  // nothing to act on.
-  useEffect(() => {
-    const group = featureGroupRef.current;
-    if (!group) return;
-
-    group.clearLayers();
-    for (const g of geofences) {
-      const layer = L.geoJSON(g.boundary).getLayers()[0];
-      if (!layer) continue;
-      layer.geofenceId = g.id;
-      layer.geofenceName = g.name;
-      layer.setStyle?.({ color: '#0F6E56', weight: 2, fillOpacity: 0.08 });
-      layer.bindPopup(g.name);
-      group.addLayer(layer);
-    }
-  }, [geofences]);
-
-  const handleCreated = async (e) => {
-    const geojson = e.layer.toGeoJSON();
-    const name = window.prompt('Name this geofence:', 'New boundary') || 'Untitled';
-    await supabase.rpc('save_geofence_from_geojson', {
-      p_name: name,
-      p_geojson: geojson.geometry,
-    });
-    // The newly-drawn layer was added directly to the FeatureGroup by
-    // leaflet-draw itself — remove it and reload from the database
-    // instead, so it carries the same geofenceId/edit wiring as every
-    // other geofence rather than being a one-off untracked layer.
-    featureGroupRef.current?.removeLayer(e.layer);
-    loadGeofences();
+  const handleSuspend = async (id) => {
+    setBusyId(id);
+    await supabase.rpc('suspend_pilot', { p_pilot_id: id });
+    loadPilots();
+    setBusyId(null);
   };
 
-  const handleEdited = async (e) => {
-    const updates = [];
-    e.layers.eachLayer((layer) => {
-      if (layer.geofenceId != null) {
-        updates.push(
-          supabase.rpc('update_geofence_boundary', {
-            p_id: layer.geofenceId,
-            p_geojson: layer.toGeoJSON().geometry,
-          })
-        );
-      }
-    });
-    await Promise.all(updates);
-    loadGeofences();
+  const handleReactivate = async (id) => {
+    setBusyId(id);
+    await supabase.rpc('reactivate_pilot', { p_pilot_id: id });
+    loadPilots();
+    setBusyId(null);
   };
 
-  const handleDeleted = async (e) => {
-    const deletions = [];
-    e.layers.eachLayer((layer) => {
-      if (layer.geofenceId != null) {
-        deletions.push(supabase.rpc('delete_geofence', { p_id: layer.geofenceId }));
-      }
-    });
-    await Promise.all(deletions);
-    loadGeofences();
+  const handleDelete = async (id, name) => {
+    if (!window.confirm(`Permanently delete ${name}'s account? This cannot be undone.`)) return;
+    setBusyId(id);
+    await supabase.rpc('delete_pilot', { p_pilot_id: id });
+    loadPilots();
+    setBusyId(null);
   };
 
-  // Realtime: postgres_changes payloads have the same raw-geometry
-  // encoding problem as a direct fetch does, so rather than parsing
-  // the change payload directly, use it purely as a signal to re-fetch
-  // clean data via the RPCs above.
-  useEffect(() => {
-    const posSub = supabase
-      .channel('live_positions_changes')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'live_positions' },
-        () => loadPositions()
-      )
-      .subscribe();
-
-    const alertChannel = supabase.channel('flight-alerts', { config: { private: true } });
-    alertChannel
-      .on('broadcast', { event: 'out-of-bounds' }, ({ payload }) => {
-        setAlerts((prev) => [{ id: Date.now(), ...payload }, ...prev].slice(0, 20));
-      })
-      .subscribe();
-
-    channelRef.current = alertChannel;
-
-    return () => {
-      supabase.removeChannel(posSub);
-      supabase.removeChannel(alertChannel);
-    };
-  }, []);
-
-  const dismissAlert = (id) => setAlerts((prev) => prev.filter((a) => a.id !== id));
-
-  const unlockAudio = () => {
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    const ctx = new AudioCtx();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    gain.gain.value = 0.0001;
-    osc.connect(gain).connect(ctx.destination);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.01);
-    setAudioUnlocked(true);
+  const handleSetInstructor = async (id) => {
+    setBusyId(id);
+    await supabase.rpc('set_instructor_role', { p_pilot_id: id });
+    loadPilots();
+    setBusyId(null);
   };
 
-  const pilotList = Object.values(pilots);
-  const airborneCount = pilotList.filter((p) => p.status === 'airborne').length;
-  const groundedCount = pilotList.length - airborneCount;
+  const handleRevokeInstructor = async (id) => {
+    setBusyId(id);
+    await supabase.rpc('revoke_instructor_role', { p_pilot_id: id });
+    loadPilots();
+    setBusyId(null);
+  };
 
   return (
-    <div className="relative w-full h-full">
-      <div className="absolute top-4 left-4 z-[1000] flex gap-2">
-        <div className="bg-white/95 backdrop-blur-sm border border-gray-200 rounded-xl px-3 py-2 shadow-sm">
-          <p className="text-lg font-semibold text-brand-700 leading-none">{airborneCount}</p>
-          <p className="text-xs text-gray-500 mt-0.5">Airborne</p>
-        </div>
-        <div className="bg-white/95 backdrop-blur-sm border border-gray-200 rounded-xl px-3 py-2 shadow-sm">
-          <p className="text-lg font-semibold text-gray-900 leading-none">{groundedCount}</p>
-          <p className="text-xs text-gray-500 mt-0.5">Grounded</p>
-        </div>
-        <div className="bg-white/95 backdrop-blur-sm border border-gray-200 rounded-xl px-3 py-2 shadow-sm">
-          <p className="text-lg font-semibold text-gray-900 leading-none">{geofences.length}</p>
-          <p className="text-xs text-gray-500 mt-0.5">Geofences</p>
-        </div>
+    <div className="p-4">
+      <h2 className="text-lg font-semibold mb-3">Pilots</h2>
+      <ul className="divide-y divide-gray-200 rounded-lg border border-gray-200">
+        {pilots.map((p) => (
+          <li key={p.id} className="px-4 py-3">
+            <button
+              onClick={() => setExpandedId(expandedId === p.id ? null : p.id)}
+              className="w-full flex justify-between items-center text-left"
+            >
+              <span className="font-medium text-gray-900 flex items-center gap-2">
+                {p.name}
+                {p.role === 'manager' && <span className="text-xs text-brand-600">(manager)</span>}
+                {p.role === 'instructor' && <span className="text-xs text-purple-600">(instructor)</span>}
+                {p.status === 'suspended' && (
+                  <span className="text-xs bg-red-100 text-red-700 rounded-full px-2 py-0.5">Suspended</span>
+                )}
+              </span>
+              <span className="text-gray-400 text-sm">{expandedId === p.id ? '▲' : '▼'}</span>
+            </button>
+            {expandedId === p.id && (
+              <div className="mt-3 space-y-3">
+                <div className="flex gap-2">
+                  {p.status === 'suspended' ? (
+                    <button
+                      disabled={busyId === p.id}
+                      onClick={() => handleReactivate(p.id)}
+                      className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded-md disabled:opacity-50"
+                    >
+                      Reactivate
+                    </button>
+                  ) : (
+                    <button
+                      disabled={busyId === p.id}
+                      onClick={() => handleSuspend(p.id)}
+                      className="px-3 py-1.5 text-xs bg-amber-500 text-white rounded-md disabled:opacity-50"
+                    >
+                      Suspend
+                    </button>
+                  )}
+                  <button
+                    disabled={busyId === p.id}
+                    onClick={() => handleDelete(p.id, p.name)}
+                    className="px-3 py-1.5 text-xs bg-red-600 text-white rounded-md disabled:opacity-50"
+                  >
+                    Delete account
+                  </button>
+                  {p.role === 'instructor' ? (
+                    <button
+                      disabled={busyId === p.id}
+                      onClick={() => handleRevokeInstructor(p.id)}
+                      className="px-3 py-1.5 text-xs bg-purple-100 text-purple-700 rounded-md disabled:opacity-50"
+                    >
+                      Revoke instructor
+                    </button>
+                  ) : (
+                    p.role !== 'manager' && (
+                      <button
+                        disabled={busyId === p.id}
+                        onClick={() => handleSetInstructor(p.id)}
+                        className="px-3 py-1.5 text-xs bg-purple-600 text-white rounded-md disabled:opacity-50"
+                      >
+                        Make instructor
+                      </button>
+                    )
+                  )}
+                </div>
+
+                <DirectMessage pilotId={p.id} pilotName={p.name} />
+                <PilotNotes pilotId={p.id} />
+                <BadgeAwardPanel pilotId={p.id} pilotName={p.name} />
+                <BoundaryEventLog pilotId={p.id} />
+                <PilotLogbook pilotId={p.id} />
+                <div className="border border-gray-200 rounded-lg overflow-hidden">
+                  <p className="text-sm font-medium text-gray-700 p-3 pb-0">Analytics — {p.name}</p>
+                  <AnalyticsDashboard pilotId={p.id} />
+                </div>
+              </div>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function DirectMessage({ pilotId, pilotName }) {
+  const [message, setMessage] = useState('');
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+
+  const send = async () => {
+    if (!message.trim()) return;
+    setSending(true);
+    await supabase.channel('flight-alerts', { config: { private: true } }).send({
+      type: 'broadcast',
+      event: 'direct-message',
+      payload: { target_pilot_id: pilotId, title: 'Message from ops', body: message.trim() },
+    });
+    setSending(false);
+    setSent(true);
+    setMessage('');
+  };
+
+  return (
+    <div className="border border-gray-200 rounded-lg p-3">
+      <p className="text-sm font-medium text-gray-700 mb-2">Message {pilotName} directly</p>
+      {sent && <p className="text-xs text-emerald-600 mb-2">Sent.</p>}
+      <div className="flex gap-2">
+        <input
+          value={message}
+          onChange={(e) => {
+            setMessage(e.target.value);
+            setSent(false);
+          }}
+          placeholder="Only reaches them if the app is open"
+          className="flex-1 text-sm border border-gray-300 rounded-md px-2 py-1"
+        />
         <button
-          onClick={unlockAudio}
-          className={`text-xs font-medium rounded-xl px-3 py-2 shadow-sm ${
-            audioUnlocked ? 'bg-white/95 text-brand-700 border border-gray-200' : 'bg-brand-600 text-white'
-          }`}
+          onClick={send}
+          disabled={sending || !message.trim()}
+          className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-md disabled:opacity-50"
         >
-          {audioUnlocked ? '🔊 Sound enabled — test' : '🔊 Enable alert sounds'}
+          Send
         </button>
       </div>
+    </div>
+  );
+}
 
-      {alerts.length > 0 && (
-        <div className="absolute top-4 right-4 z-[1000] flex flex-col gap-2 w-80">
-          {alerts.map((a) => (
-            <div
-              key={a.id}
-              className="bg-red-600 text-white rounded-lg shadow-lg px-4 py-3 flex justify-between items-start"
-            >
-              <div>
-                <p className="font-semibold">Out of bounds</p>
-                <p className="text-sm opacity-90">
-                  {a.pilot_name ?? 'Pilot'} left the geofence
-                </p>
-              </div>
-              <button
-                onClick={() => dismissAlert(a.id)}
-                className="ml-3 text-white/80 hover:text-white"
-              >
-                ✕
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
+function PilotNotes({ pilotId }) {
+  const [notes, setNotes] = useState([]);
+  const [newNote, setNewNote] = useState('');
+  const [saving, setSaving] = useState(false);
 
-      <MapContainer center={DEFAULT_CENTER} zoom={DEFAULT_ZOOM} className="w-full h-full">
-        <TileLayer
-          // CARTO Voyager — free, no API key required, closer visually
-          // to Google Maps' clean style than default OpenStreetMap tiles
-          // (subtler colors, clearer labels). Real Google Maps tiles are
-          // a separate, bigger decision: they require a Google Cloud
-          // API key with billing enabled (there's a monthly free credit,
-          // but it's not free the way this is), and Google's terms
-          // don't allow pulling their tiles into a generic map library
-          // like Leaflet — you'd need Google's own Maps JavaScript API
-          // (@react-google-maps/api or similar), which is a different
-          // integration, not a one-line tile URL swap. Worth doing if
-          // the exact Google look/behavior matters enough to justify
-          // that setup and ongoing cost; this is the free equivalent.
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-          url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-        />
+  const loadNotes = () => {
+    supabase
+      .from('pilot_notes')
+      .select('id, note, created_at')
+      .eq('pilot_id', pilotId)
+      .order('created_at', { ascending: false })
+      .then(({ data }) => setNotes(data || []));
+  };
 
-        <FeatureGroup ref={featureGroupRef}>
-          <EditControl
-            position="topright"
-            draw={{ rectangle: false, circle: false, circlemarker: false, marker: false, polyline: false }}
-            onCreated={handleCreated}
-            onEdited={handleEdited}
-            onDeleted={handleDeleted}
-          />
-        </FeatureGroup>
+  useEffect(() => {
+    loadNotes();
+  }, [pilotId]);
 
-        {Object.entries(pilots).map(([id, p]) => (
-          <CircleMarker
-            key={id}
-            center={[p.lat, p.lng]}
-            radius={8}
-            pathOptions={{
-              color: p.status === 'airborne' ? '#16a34a' : '#6b7280',
-              fillOpacity: 0.9,
-            }}
-          >
-            <Tooltip permanent direction="top" offset={[0, -8]} className="pilot-label">
-              {p.name}
-            </Tooltip>
-            <Popup>
-              <strong>{p.name}</strong>
-              <br />
-              {p.status}
-            </Popup>
-          </CircleMarker>
+  const addNote = async () => {
+    if (!newNote.trim()) return;
+    setSaving(true);
+    await supabase.rpc('add_pilot_note', { p_pilot_id: pilotId, p_note: newNote.trim() });
+    setNewNote('');
+    loadNotes();
+    setSaving(false);
+  };
+
+  return (
+    <div className="border border-gray-200 rounded-lg p-3">
+      <p className="text-sm font-medium text-gray-700 mb-2">Manager notes (private)</p>
+      <ul className="text-xs text-gray-600 space-y-1 mb-2 max-h-32 overflow-auto">
+        {notes.map((n) => (
+          <li key={n.id}>
+            <span className="text-gray-400">{new Date(n.created_at).toLocaleDateString()}</span> — {n.note}
+          </li>
         ))}
-      </MapContainer>
+        {notes.length === 0 && <li className="text-gray-400">No notes yet.</li>}
+      </ul>
+      <div className="flex gap-2">
+        <input
+          value={newNote}
+          onChange={(e) => setNewNote(e.target.value)}
+          placeholder="Add a note"
+          className="flex-1 text-sm border border-gray-300 rounded-md px-2 py-1"
+        />
+        <button
+          onClick={addNote}
+          disabled={saving || !newNote.trim()}
+          className="px-3 py-1.5 text-sm bg-gray-700 text-white rounded-md disabled:opacity-50"
+        >
+          Add
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function PilotLogbook({ pilotId }) {
+  const [entries, setEntries] = useState(null);
+
+  useEffect(() => {
+    supabase
+      .from('logbooks')
+      .select('date, guest_name, country, weather_condition, flight_duration_minutes, remarks')
+      .eq('pilot_id', pilotId)
+      .order('date', { ascending: false })
+      .then(({ data }) => setEntries(data || []));
+  }, [pilotId]);
+
+  return (
+    <div className="border border-gray-200 rounded-lg p-3">
+      <p className="text-sm font-medium text-gray-700 mb-2">Flight logbook</p>
+      {entries === null ? (
+        <p className="text-xs text-gray-400">Loading…</p>
+      ) : entries.length === 0 ? (
+        <p className="text-xs text-gray-400">No flights logged yet.</p>
+      ) : (
+        <ul className="text-xs text-gray-600 space-y-2 max-h-56 overflow-auto">
+          {entries.map((e, i) => (
+            <li key={i} className="border-b border-gray-100 pb-1.5">
+              <span className="font-medium text-gray-900">{e.date}</span> —{' '}
+              <span className="text-brand-700 font-medium">{e.flight_duration_minutes} min</span>
+              {e.guest_name && <span> · Guest: {e.guest_name} ({e.country})</span>}
+              {e.weather_condition && <span> · {e.weather_condition}</span>}
+              {e.remarks && <div className="italic text-gray-500 mt-0.5">{e.remarks}</div>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function BoundaryEventLog({ pilotId }) {
+  const [events, setEvents] = useState(null);
+
+  useEffect(() => {
+    supabase
+      .rpc('get_boundary_events', { p_pilot_id: pilotId, p_limit: 10 })
+      .then(({ data }) => setEvents(data || []));
+  }, [pilotId]);
+
+  return (
+    <div className="border border-gray-200 rounded-lg p-3">
+      <p className="text-sm font-medium text-gray-700 mb-2">Out-of-bounds history</p>
+      {events === null ? (
+        <p className="text-xs text-gray-400">Loading…</p>
+      ) : events.length === 0 ? (
+        <p className="text-xs text-gray-400">No out-of-bounds events recorded.</p>
+      ) : (
+        <ul className="text-xs text-gray-600 space-y-1">
+          {events.map((e, i) => (
+            <li key={i}>
+              {new Date(e.occurred_at).toLocaleString()} — {e.lat.toFixed(5)}, {e.lng.toFixed(5)}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

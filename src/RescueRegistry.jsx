@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
 import { WhatsAppNotifyButton } from './WhatsAppNotify';
+import { exportToCsv } from './exportToCsv';
 
 const satelliteLink = (lat, lng) =>
   `https://www.google.com/maps/@${lat},${lng},1000m/data=!3m1!1e3`;
@@ -87,6 +88,18 @@ export default function RescueRegistry() {
           </svg>
         </div>
         <h2 className="text-lg font-semibold text-gray-900">Rescue registry</h2>
+        <button
+          onClick={() =>
+            exportToCsv('rescue-and-sos-history', [
+              ...sosAlerts.map((s) => ({ type: 'SOS', pilot: s.profiles?.name ?? '', lat: s.lat, lng: s.lng, occurred_at: s.triggered_at })),
+              ...incidents.map((i) => ({ type: 'Overdue', pilot: i.profiles?.name ?? '', lat: i.last_known_lat, lng: i.last_known_lng, occurred_at: i.opened_at })),
+            ])
+          }
+          disabled={sosAlerts.length === 0 && incidents.length === 0}
+          className="ml-auto text-sm px-3 py-1.5 rounded-md border border-gray-300 text-gray-700 disabled:opacity-40"
+        >
+          Export CSV
+        </button>
       </div>
 
       {totalActive === 0 ? (

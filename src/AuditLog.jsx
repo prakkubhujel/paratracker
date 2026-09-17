@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { supabase } from './supabaseClient';
+import { exportToCsv } from './exportToCsv';
 
 const ACTION_LABELS = {
   approve_pilot: 'Approved pilot',
@@ -24,9 +25,29 @@ export default function AuditLog() {
   return (
     <div className="p-4">
       <h2 className="text-lg font-semibold mb-1">Admin action log</h2>
-      <p className="text-sm text-gray-500 mb-4">
-        Who did what, and when — approvals, suspensions, deletions. Last 100 actions.
-      </p>
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-sm text-gray-500">
+          Who did what, and when — approvals, suspensions, deletions. Last 100 actions.
+        </p>
+        <button
+          onClick={() =>
+            exportToCsv(
+              'audit-log',
+              entries.map((e) => ({
+                action: e.action,
+                target: e.target?.name ?? '',
+                actor: e.actor?.name ?? '',
+                reason: e.details?.reason ?? '',
+                created_at: e.created_at,
+              }))
+            )
+          }
+          disabled={entries.length === 0}
+          className="text-sm px-3 py-1.5 rounded-md border border-gray-300 text-gray-700 disabled:opacity-40"
+        >
+          Export CSV
+        </button>
+      </div>
 
       {entries.length === 0 ? (
         <p className="text-sm text-gray-400">No admin actions recorded yet.</p>
