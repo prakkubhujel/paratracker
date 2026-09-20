@@ -224,20 +224,18 @@ export default function GeofenceMap() {
 
       <MapContainer center={DEFAULT_CENTER} zoom={DEFAULT_ZOOM} className="w-full h-full">
         <TileLayer
-          // CARTO Voyager — free, no API key required, closer visually
-          // to Google Maps' clean style than default OpenStreetMap tiles
-          // (subtler colors, clearer labels). Real Google Maps tiles are
-          // a separate, bigger decision: they require a Google Cloud
-          // API key with billing enabled (there's a monthly free credit,
-          // but it's not free the way this is), and Google's terms
-          // don't allow pulling their tiles into a generic map library
-          // like Leaflet — you'd need Google's own Maps JavaScript API
-          // (@react-google-maps/api or similar), which is a different
-          // integration, not a one-line tile URL swap. Worth doing if
-          // the exact Google look/behavior matters enough to justify
-          // that setup and ongoing cost; this is the free equivalent.
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-          url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+          // Reverted from CARTO Voyager: CARTO began requiring a
+          // signup + API key for their basemap tiles as of a policy
+          // change in late August 2026 — confirmed across multiple
+          // independent projects hitting the same "API KEY REQUIRED"
+          // watermark at the same time, not something specific to
+          // this project. Free OSM tiles avoid needing to manage
+          // another API key for what was purely a cosmetic choice.
+          // If you'd rather get a free CARTO key (carto.com/basemaps/apikey,
+          // no approval queue) and keep the Voyager look, that's a
+          // one-line URL change plus a `?key=` param — say the word.
+          attribution="&copy; OpenStreetMap contributors"
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
         />
 
         <FeatureGroup ref={featureGroupRef}>

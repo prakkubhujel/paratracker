@@ -246,19 +246,28 @@ function PilotNotes({ pilotId }) {
 
 function PilotLogbook({ pilotId }) {
   const [entries, setEntries] = useState(null);
+  const [summary, setSummary] = useState({ total_minutes: 0, flight_count: 0 });
 
   useEffect(() => {
     supabase
       .from('logbooks')
-      .select('date, guest_name, country, weather_condition, flight_duration_minutes, remarks')
+      .select('date, guest_name, country, weather_condition, flight_duration_minutes, remarks, takeoff_time, landing_time, distance_km, is_no_fly')
       .eq('pilot_id', pilotId)
       .order('date', { ascending: false })
       .then(({ data }) => setEntries(data || []));
+    supabase.rpc('get_flight_summary', { p_pilot_id: pilotId }).then(({ data }) => setSummary(data?.[0] ?? { total_minutes: 0, flight_count: 0 }));
   }, [pilotId]);
+
+  const timeStr = (t) => (t ? new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—');
 
   return (
     <div className="border border-gray-200 rounded-lg p-3">
-      <p className="text-sm font-medium text-gray-700 mb-2">Flight logbook</p>
+      <div className="flex items-center justify-between mb-2">
+        <p className="text-sm font-medium text-gray-700">Flight logbook</p>
+        <p className="text-xs text-gray-500">
+          {summary.flight_count} flights · {(summary.total_minutes / 60).toFixed(1)}h total
+        </p>
+      </div>
       {entries === null ? (
         <p className="text-xs text-gray-400">Loading…</p>
       ) : entries.length === 0 ? (
@@ -266,9 +275,17 @@ function PilotLogbook({ pilotId }) {
       ) : (
         <ul className="text-xs text-gray-600 space-y-2 max-h-56 overflow-auto">
           {entries.map((e, i) => (
-            <li key={i} className="border-b border-gray-100 pb-1.5">
+            <li key={i} className={`border-b border-gray-100 pb-1.5 ${e.is_no_fly ? 'opacity-50' : ''}`}>
               <span className="font-medium text-gray-900">{e.date}</span> —{' '}
-              <span className="text-brand-700 font-medium">{e.flight_duration_minutes} min</span>
+              {e.is_no_fly ? (
+                <span className="text-amber-700 font-medium bg-amber-100 rounded-full px-2 py-0.5">No-fly</span>
+              ) : (
+                <span className="text-brand-700 font-medium">{e.flight_duration_minutes} min</span>
+              )}
+              <div className="text-gray-500 mt-0.5">
+                Takeoff {timeStr(e.takeoff_time)} · Landing {timeStr(e.landing_time)}
+                {e.distance_km != null ? ` · ${e.distance_km} km` : ''}
+              </div>
               {e.guest_name && <span> · Guest: {e.guest_name} ({e.country})</span>}
               {e.weather_condition && <span> · {e.weather_condition}</span>}
               {e.remarks && <div className="italic text-gray-500 mt-0.5">{e.remarks}</div>}
