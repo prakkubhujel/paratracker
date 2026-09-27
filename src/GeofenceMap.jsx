@@ -1,28 +1,77 @@
 import { useEffect, useRef, useState } from 'react';
-import { MapContainer, TileLayer, CircleMarker, Popup, Tooltip, FeatureGroup, Polyline } from 'react-leaflet';
+import {
+  MapContainer, TileLayer, LayersControl, CircleMarker, Circle,
+  Popup, Tooltip, FeatureGroup, Polyline, useMap,
+} from 'react-leaflet';
 import { EditControl } from 'react-leaflet-draw';
 import L from 'leaflet';
 import { supabase } from './supabaseClient';
 import 'leaflet/dist/leaflet.css';
 import 'leaflet-draw/dist/leaflet.draw.css';
 
-// Default geofence center per project spec §4:
-// Sarangkot and Toripani, Pokhara, Nepal
-const DEFAULT_CENTER = [28.2485, 83.945];
+const DEFAULT_CENTER = [28.2485, 83.945]; // Sarangkot/Toripani, Pokhara
 const DEFAULT_ZOOM = 13;
+
+// Gives GeofenceMap a way to command the Leaflet map instance (for
+// "click the SOS alert, center on it") — react-leaflet v4 doesn't
+// expose the map instance via a plain ref on MapContainer the way
+// earlier versions did; a child using useMap() is the supported path.
+function MapController({ mapRef }) {
+  const map = useMap();
+  useEffect(() => {
+    mapRef.current = map;
+  }, [map, mapRef]);
+  return null;
+}
+
+// A CircleMarker whose radius pulses — used for an active SOS, so it's
+// visually distinct from every other marker on the map at a glance,
+// not just a color difference.
+function PulsingMarker({ center, color }) {
+  const [radius, setRadius] = useState(10);
+  useEffect(() => {
+    let growing = true;
+    const interval = setInterval(() => {
+      setRadius((r) => {
+        if (r >= 22) growing = false;
+        if (r <= 10) growing = true;
+        return growing ? r + 1.5 : r - 1.5;
+      });
+    }, 80);
+    return () => clearInterval(interval);
+  }, []);
+  return (
+    <CircleMarker
+      center={center}
+      radius={radius}
+      pathOptions={{ color, weight: 3, fillOpacity: 0.15, opacity: 0.7 - (radius - 10) / 24 }}
+    />
+  );
+}
 
 export default function GeofenceMap() {
   const [geofences, setGeofences] = useState([]);
-  const [pilots, setPilots] = useState({}); // pilot_id -> { lat, lng, name, status }
-  const [trails, setTrails] = useState({}); // pilot_id -> [[lat,lng], ...]
+  const [launchSites, setLaunchSites] = useState([]);
+  const [pilots, setPilots] = useState({});
+  const [trails, setTrails] = useState({});
   const [alerts, setAlerts] = useState([]);
+  const [sosAlerts, setSosAlerts] = useState([]); // active SOS pins, separate from the toast list
   const [audioUnlocked, setAudioUnlocked] = useState(false);
   const channelRef = useRef(null);
   const featureGroupRef = useRef(null);
+  const mapRef = useRef(null);
 
   const loadGeofences = async () => {
     const { data } = await supabase.rpc('get_geofences_geojson');
     if (data) setGeofences(data);
+  };
+
+  // Was built (registration UI, mobile lookup RPC) but never actually
+  // rendered on this map — a real gap, not a design choice. Reads the
+  // table directly since RLS already allows any authenticated read.
+  const loadLaunchSites = async () => {
+    const { data } = await supabase.from('launch_sites').select('*');
+    if (data) setLaunchSites(data);
   };
 
   const loadPositions = async () => {
@@ -37,9 +86,6 @@ export default function GeofenceMap() {
       }
       setPilots(asMap);
 
-      // Breadcrumb trail — last 15 minutes, airborne pilots only (a
-      // grounded pilot's trail isn't operationally useful and would
-      // just clutter the map).
       const trailEntries = await Promise.all(
         data
           .filter((p) => p.status === 'airborne')
@@ -55,19 +101,18 @@ export default function GeofenceMap() {
     }
   };
 
+  const loadActiveSos = async () => {
+    const { data } = await supabase.from('sos_alerts').select('*, profiles(name)').eq('resolved', false);
+    setSosAlerts(data || []);
+  };
+
   useEffect(() => {
     loadGeofences();
+    loadLaunchSites();
     loadPositions();
+    loadActiveSos();
   }, []);
 
-  // Editing/deleting geofences was never actually wired up before —
-  // only creation was. Leaflet's edit/delete toolbar only recognizes
-  // shapes that live inside the FeatureGroup layer group IT manages,
-  // not arbitrary shapes rendered elsewhere on the map — so loaded
-  // geofences have to be added into that same group as raw Leaflet
-  // layers (imperatively, via the Leaflet API directly) rather than
-  // as separate <Polygon> React components, or the edit toolbar has
-  // nothing to act on.
   useEffect(() => {
     const group = featureGroupRef.current;
     if (!group) return;
@@ -87,14 +132,7 @@ export default function GeofenceMap() {
   const handleCreated = async (e) => {
     const geojson = e.layer.toGeoJSON();
     const name = window.prompt('Name this geofence:', 'New boundary') || 'Untitled';
-    await supabase.rpc('save_geofence_from_geojson', {
-      p_name: name,
-      p_geojson: geojson.geometry,
-    });
-    // The newly-drawn layer was added directly to the FeatureGroup by
-    // leaflet-draw itself — remove it and reload from the database
-    // instead, so it carries the same geofenceId/edit wiring as every
-    // other geofence rather than being a one-off untracked layer.
+    await supabase.rpc('save_geofence_from_geojson', { p_name: name, p_geojson: geojson.geometry });
     featureGroupRef.current?.removeLayer(e.layer);
     loadGeofences();
   };
@@ -103,12 +141,7 @@ export default function GeofenceMap() {
     const updates = [];
     e.layers.eachLayer((layer) => {
       if (layer.geofenceId != null) {
-        updates.push(
-          supabase.rpc('update_geofence_boundary', {
-            p_id: layer.geofenceId,
-            p_geojson: layer.toGeoJSON().geometry,
-          })
-        );
+        updates.push(supabase.rpc('update_geofence_boundary', { p_id: layer.geofenceId, p_geojson: layer.toGeoJSON().geometry }));
       }
     });
     await Promise.all(updates);
@@ -118,32 +151,30 @@ export default function GeofenceMap() {
   const handleDeleted = async (e) => {
     const deletions = [];
     e.layers.eachLayer((layer) => {
-      if (layer.geofenceId != null) {
-        deletions.push(supabase.rpc('delete_geofence', { p_id: layer.geofenceId }));
-      }
+      if (layer.geofenceId != null) deletions.push(supabase.rpc('delete_geofence', { p_id: layer.geofenceId }));
     });
     await Promise.all(deletions);
     loadGeofences();
   };
 
-  // Realtime: postgres_changes payloads have the same raw-geometry
-  // encoding problem as a direct fetch does, so rather than parsing
-  // the change payload directly, use it purely as a signal to re-fetch
-  // clean data via the RPCs above.
   useEffect(() => {
     const posSub = supabase
       .channel('live_positions_changes')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'live_positions' },
-        () => loadPositions()
-      )
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'live_positions' }, () => loadPositions())
       .subscribe();
 
     const alertChannel = supabase.channel('flight-alerts', { config: { private: true } });
     alertChannel
       .on('broadcast', { event: 'out-of-bounds' }, ({ payload }) => {
-        setAlerts((prev) => [{ id: Date.now(), ...payload }, ...prev].slice(0, 20));
+        setAlerts((prev) => [{ id: Date.now(), type: 'out-of-bounds', ...payload }, ...prev].slice(0, 20));
+      })
+      // Real-time SOS: previously only landed in the Rescue registry
+      // with no indication on the map itself unless a manager happened
+      // to already be on that tab. Now shows a sticky banner here too,
+      // plus a pulsing marker at the pilot's location.
+      .on('broadcast', { event: 'sos-alert' }, ({ payload }) => {
+        setAlerts((prev) => [{ id: Date.now(), type: 'sos-alert', ...payload }, ...prev].slice(0, 20));
+        loadActiveSos();
       })
       .subscribe();
 
@@ -156,6 +187,10 @@ export default function GeofenceMap() {
   }, []);
 
   const dismissAlert = (id) => setAlerts((prev) => prev.filter((a) => a.id !== id));
+
+  const centerOn = (lat, lng) => {
+    mapRef.current?.flyTo([lat, lng], 15, { duration: 1 });
+  };
 
   const unlockAudio = () => {
     const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -203,16 +238,19 @@ export default function GeofenceMap() {
           {alerts.map((a) => (
             <div
               key={a.id}
-              className="bg-red-600 text-white rounded-lg shadow-lg px-4 py-3 flex justify-between items-start"
+              onClick={() => a.lat != null && centerOn(a.lat, a.lng)}
+              className={`text-white rounded-lg shadow-lg px-4 py-3 flex justify-between items-start cursor-pointer ${
+                a.type === 'sos-alert' ? 'bg-red-700 border-2 border-red-300 animate-pulse' : 'bg-red-600'
+              }`}
             >
               <div>
-                <p className="font-semibold">Out of bounds</p>
+                <p className="font-semibold">{a.type === 'sos-alert' ? '🆘 SOS ALERT' : 'Out of bounds'}</p>
                 <p className="text-sm opacity-90">
-                  {a.pilot_name ?? 'Pilot'} left the geofence
+                  {a.pilot_name ?? 'Pilot'} {a.type === 'sos-alert' ? 'needs help — tap to locate' : 'left the geofence'}
                 </p>
               </div>
               <button
-                onClick={() => dismissAlert(a.id)}
+                onClick={(e) => { e.stopPropagation(); dismissAlert(a.id); }}
                 className="ml-3 text-white/80 hover:text-white"
               >
                 ✕
@@ -223,20 +261,32 @@ export default function GeofenceMap() {
       )}
 
       <MapContainer center={DEFAULT_CENTER} zoom={DEFAULT_ZOOM} className="w-full h-full">
-        <TileLayer
-          // Reverted from CARTO Voyager: CARTO began requiring a
-          // signup + API key for their basemap tiles as of a policy
-          // change in late August 2026 — confirmed across multiple
-          // independent projects hitting the same "API KEY REQUIRED"
-          // watermark at the same time, not something specific to
-          // this project. Free OSM tiles avoid needing to manage
-          // another API key for what was purely a cosmetic choice.
-          // If you'd rather get a free CARTO key (carto.com/basemaps/apikey,
-          // no approval queue) and keep the Voyager look, that's a
-          // one-line URL change plus a `?key=` param — say the word.
-          attribution="&copy; OpenStreetMap contributors"
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-        />
+        <MapController mapRef={mapRef} />
+
+        <LayersControl position="bottomright">
+          <LayersControl.BaseLayer checked name="Standard">
+            <TileLayer
+              attribution="&copy; OpenStreetMap contributors"
+              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            />
+          </LayersControl.BaseLayer>
+          <LayersControl.BaseLayer name="Satellite">
+            {/* Esri World Imagery — free, no API key. Not Google Maps:
+                Google's satellite tiles can't be pulled into a generic
+                map library like Leaflet under their terms (same reason
+                real Google Maps was flagged earlier as a separate,
+                bigger integration). Esri's terms permit this kind of
+                use without a key. Markers/overlays render in Leaflet's
+                own marker pane above every base layer's tile pane by
+                default — switching base layers here doesn't hide them,
+                by design of how LayersControl.BaseLayer works, unlike
+                manually swapping a single TileLayer's url. */}
+            <TileLayer
+              attribution="Tiles &copy; Esri"
+              url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+            />
+          </LayersControl.BaseLayer>
+        </LayersControl>
 
         <FeatureGroup ref={featureGroupRef}>
           <EditControl
@@ -247,6 +297,34 @@ export default function GeofenceMap() {
             onDeleted={handleDeleted}
           />
         </FeatureGroup>
+
+        {launchSites.map((s) => (
+          <div key={`site-${s.id}`}>
+            <Circle
+              center={[s.lat, s.lng]}
+              radius={s.radius_m}
+              pathOptions={{ color: '#7c3aed', weight: 1, fillOpacity: 0.05, dashArray: '3 5' }}
+            />
+            <CircleMarker
+              center={[s.lat, s.lng]}
+              radius={7}
+              pathOptions={{ color: '#7c3aed', fillOpacity: 1, weight: 2 }}
+            >
+              <Tooltip direction="top" offset={[0, -6]}>🚀 {s.name}</Tooltip>
+              <Popup>
+                <strong>{s.name}</strong>
+                <br />
+                Launch site — {s.elevation_m}m elevation
+                <br />
+                {s.radius_m}m detection radius
+              </Popup>
+            </CircleMarker>
+          </div>
+        ))}
+
+        {sosAlerts.map((s) => (
+          <PulsingMarker key={`sos-${s.id}`} center={[s.lat, s.lng]} color="#dc2626" />
+        ))}
 
         {Object.entries(trails).map(([id, points]) =>
           points.length > 1 ? (
@@ -263,10 +341,7 @@ export default function GeofenceMap() {
             key={id}
             center={[p.lat, p.lng]}
             radius={8}
-            pathOptions={{
-              color: p.status === 'airborne' ? '#16a34a' : '#6b7280',
-              fillOpacity: 0.9,
-            }}
+            pathOptions={{ color: p.status === 'airborne' ? '#16a34a' : '#6b7280', fillOpacity: 0.9 }}
           >
             <Tooltip permanent direction="top" offset={[0, -8]} className="pilot-label">
               {p.name}
