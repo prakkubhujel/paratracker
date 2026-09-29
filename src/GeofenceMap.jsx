@@ -81,7 +81,7 @@ export default function GeofenceMap() {
       for (const p of data) {
         asMap[p.pilot_id] = {
           lat: p.lat, lng: p.lng, status: p.status, name: p.name,
-          altitude: p.altitude_m, speed: p.speed_kmh,
+          altitude: p.altitude_m, speed: p.speed_kmh, lastPing: p.last_ping_at,
         };
       }
       setPilots(asMap);
@@ -350,6 +350,8 @@ export default function GeofenceMap() {
               <strong>{p.name}</strong>
               <br />
               {p.status}
+              <br />
+              Last seen {new Date(p.lastPing).toLocaleTimeString()}
               {(p.altitude != null || p.speed != null) && (
                 <>
                   <br />
